@@ -1,0 +1,82 @@
+name: Publish digest preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane_marker:
+        description: Lane marker to show in the preview (leave blank for cleanup)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Test and typecheck
+        run: |
+          pnpm test
+          pnpm typecheck
+
+      - name: Render the digest as one HTML file
+        env:
+          LANE_MARKER: ${{ inputs.lane_marker }}
+        run: |
+          set -euo pipefail
+          pnpm start > "$RUNNER_TEMP/rig.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8787/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          mkdir -p "$RUNNER_TEMP/pages"
+          curl --fail --silent --show-error \
+            http://127.0.0.1:8787/digest/2026-10-28 \
+            --output "$RUNNER_TEMP/pages/index.html"
+          grep -q '<!doctype html>' "$RUNNER_TEMP/pages/index.html"
+
+          if [ -n "$LANE_MARKER" ]; then
+            grep -Fq "$LANE_MARKER" "$RUNNER_TEMP/pages/index.html"
+          else
+            grep -Fq 'no marker set' "$RUNNER_TEMP/pages/index.html"
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/pages
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
