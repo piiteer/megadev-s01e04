@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { loadConfig, type RigConfig } from './config.js';
+import { registerDigestApi } from './digest/api.js';
 import { readNight } from './digest/reader.js';
 import type { NightReadResult } from './digest/types.js';
 import { lane } from './lane.js';
@@ -10,6 +11,8 @@ import { StatusBoard } from './views/status.js';
 
 export function createApp(config: RigConfig = loadConfig()) {
   const app = new Hono();
+
+  registerDigestApi(app, config);
 
   app.get('/health', (c) => c.json({ ok: true, lane: lane().id }));
 
