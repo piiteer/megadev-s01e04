@@ -71,6 +71,19 @@ describe('digest page route', () => {
 });
 
 describe('digest JSON route', () => {
+  it('returns jobs in the same order as the page for the supplied night', async () => {
+    const app = createApp(configFor('runs'));
+    const pageResponse = await app.request('/digest/2026-10-28');
+    const apiResponse = await app.request('/api/digest/2026-10-28');
+    const html = await pageResponse.text();
+    const pageJobs = [...html.matchAll(/<tr>\s*<td>([^<]+)<\/td>/g)].map((match) => match[1]);
+    const apiRows: { job: string }[] = await apiResponse.json();
+
+    expect(pageResponse.status).toBe(200);
+    expect(apiResponse.status).toBe(200);
+    expect(apiRows.map((row) => row.job)).toEqual(pageJobs);
+  });
+
   it('returns a night as JSON rows', async () => {
     await withRuns({ '2026-10-28.jsonl': `${validRun}\n` }, async (runsDir) => {
       const res = await createApp(configFor(runsDir)).request('/api/digest/2026-10-28');
