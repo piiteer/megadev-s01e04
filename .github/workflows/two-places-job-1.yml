@@ -24,4 +24,6 @@ jobs:
       - name: Run incident lookup worker
         env:
           MEGA_JOB_1_URL: ${{ secrets.MEGA_JOB_1_URL }}
-        run: node .github/scripts/two-places-job-1.mjs
+        run: |
+          node --check .github/scripts/two-places-job-1.mjs
+          node .github/scripts/two-places-job-1.mjs

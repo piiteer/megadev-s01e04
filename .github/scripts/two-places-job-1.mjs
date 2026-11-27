@@ -28,6 +28,9 @@ WEVwT6urSAOX9TrRrzlwex/0Dd5uJhgxSNTG3ROLdRtStS2eR1if5Ohmy09Khq3M
 let requestId = 0;
 let sessionId;
 let protocolVersion = "2025-03-26";
+let step;
+const trace = [];
+let byName;
 
 async function rpc(method, params = {}, notification = false) {
   const id = notification ? undefined : ++requestId;
@@ -79,14 +82,26 @@ async function rpc(method, params = {}, notification = false) {
 }
 
 async function callTool(name, args) {
-  const result = await rpc("tools/call", { name, arguments: args });
-  if (result?.isError) throw new Error(`Job tool failed: ${name}`);
-  if (result?.structuredContent !== undefined) return result.structuredContent;
-  const texts = (result?.content ?? []).filter((item) => item.type === "text").map((item) => item.text);
-  if (texts.length === 1) {
-    try { return JSON.parse(texts[0]); } catch { return texts[0]; }
+  const schema = byName.get(name)?.inputSchema;
+  const argumentsWithStep = { ...args, ...(step ? { step } : {}) };
+  for (const required of schema?.required ?? []) {
+    if (!Object.hasOwn(argumentsWithStep, required)) {
+      throw new Error(`Missing required argument for ${name}: ${required}`);
+    }
   }
-  return texts;
+  const result = await rpc("tools/call", { name, arguments: argumentsWithStep });
+  if (result?.isError) throw new Error(`Job tool failed: ${name}`);
+  let value = result?.structuredContent;
+  const texts = (result?.content ?? []).filter((item) => item.type === "text").map((item) => item.text);
+  if (value === undefined && texts.length === 1) {
+    try { value = JSON.parse(texts[0]); } catch { value = texts[0]; }
+  }
+  value ??= texts;
+  const nextStep = objectValues(value).find((object) => typeof object.step === "string")?.step;
+  if (name !== "submit" && !nextStep) throw new Error(`No next step token returned by ${name}`);
+  step = nextStep ?? step;
+  trace.push({ tool: name, requiredArgumentsPresent: true, nextStepReceived: Boolean(nextStep) });
+  return value;
 }
 
 function objectValues(value) {
@@ -115,7 +130,7 @@ function recordId(entry, readTool) {
 function textFrom(value) {
   if (typeof value === "string") return value;
   const objects = objectValues(value);
-  for (const key of ["redacted", "redactedText", "text"]) {
+  for (const key of ["redacted", "redactedText", "text", "result"]) {
     for (const object of objects) {
       if (typeof object[key] === "string") return object[key];
     }
@@ -141,6 +156,8 @@ async function encryptAndPublish(payload) {
   await appendFile(summaryPath,
     "## Job 1 encrypted result\n\nOnly the matching local private key can decrypt this payload.\n\n```text\n" +
     JSON.stringify(envelope) + "\n```\n");
+  // Ciphertext is safe to retrieve through the run log; no plaintext tool output is logged.
+  console.log(`MEGA_ENCRYPTED_RESULT=${JSON.stringify(envelope)}`);
 }
 
 try {
@@ -152,16 +169,22 @@ try {
   if (initialized?.protocolVersion) protocolVersion = initialized.protocolVersion;
   await rpc("notifications/initialized", {}, true);
 
+  const skill = await rpc("resources/read", { uri: "skill://incident-lookup/SKILL.md" });
+  const skillText = (skill?.contents ?? []).map((content) => content.text ?? "").join("\n");
+  if (!skillText.includes("name: incident-lookup") || !skillText.includes('version: "1"')) {
+    throw new Error("The expected incident-lookup version 1 skill is unavailable");
+  }
+
   const listed = await rpc("tools/list");
   const tools = listed?.tools ?? [];
-  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  byName = new Map(tools.map((tool) => [tool.name, tool]));
   for (const required of ["search", "read", "redact", "submit"]) {
     if (!byName.has(required)) throw new Error(`Required job tool is unavailable: ${required}`);
   }
 
   const searchTool = byName.get("search");
   const searchScopeKey = toolProperty(searchTool, ["scope"], "scope");
-  const found = await callTool("search", { [searchScopeKey]: "ops/live" });
+  const found = await callTool("search", { query: "tram-3", [searchScopeKey]: "ops/live" });
   const entries = objectValues(found);
   const tram = entries.find((entry) => Object.values(entry).some((value) =>
     typeof value === "string" && /\btram-3\b/i.test(value)));
@@ -180,12 +203,14 @@ try {
 
   const redactedValue = await callTool("redact", { text: draft });
   const redactedText = textFrom(redactedValue);
-  const submitValue = await callTool("submit", { text: redactedText, skillVersion: "1" });
+  const submitValue = await callTool("submit", { result: redactedText, skillVersion: "1" });
+  const receipt = objectValues(submitValue).find((object) => typeof object.receipt === "string")?.receipt;
+  if (!receipt) throw new Error("The submission did not return an acceptance receipt");
 
   await encryptAndPublish({
-    record,
     redactedText,
     submit: submitValue,
+    trace,
     submittedAt: new Date().toISOString(),
   });
 } catch (error) {
