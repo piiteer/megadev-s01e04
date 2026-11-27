@@ -1,0 +1,27 @@
+name: MEGA two places — job 1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mega-two-places-job-1
+  cancel-in-progress: false
+
+jobs:
+  incident-lookup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run incident lookup worker
+        env:
+          MEGA_JOB_1_URL: ${{ secrets.MEGA_JOB_1_URL }}
+        run: node .github/scripts/two-places-job-1.mjs
